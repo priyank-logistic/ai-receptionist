@@ -3,10 +3,11 @@ from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
 from langgraph.graph import StateGraph
 import openai
+import time
 
 load_dotenv()
 
-client = InferenceClient(
+hf_client = InferenceClient(
     provider="fal-ai",
     api_key=os.environ["HF_TOKEN"],
 )
@@ -16,7 +17,7 @@ openai_client = openai.OpenAI(api_key=openai_api_key)
 
 def voice_to_text(state):
     audio_path = state["audio_path"]
-    result = client.automatic_speech_recognition(
+    result = hf_client.automatic_speech_recognition(
         audio=audio_path,
         model="openai/whisper-large-v3"
     )
@@ -135,7 +136,9 @@ GOAL:
 Your goal is to represent Logistic Infotech with professionalism, friendliness, and brand consistency — creating a warm, informative experience for every visitor."""
 
     )
+
     user_text = state["text"]
+
     response = openai_client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -144,21 +147,51 @@ Your goal is to represent Logistic Infotech with professionalism, friendliness, 
         ],
         max_tokens=256,
     )
+
+    ai_reply = response.choices[0].message.content.strip()
     return {
         "text": user_text,
-        "receptionist_reply": response.choices[0].message.content.strip()
+        "receptionist_reply": ai_reply
+    }
+
+def text_to_voice(state):
+    text = state["receptionist_reply"]
+
+    audio_bytes = hf_client.text_to_speech(
+        text,
+        model="hexgrad/Kokoro-82M",
+    )
+
+    output_dir = "./output_audio"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # output_path = os.path.join(output_dir, "receptionist_reply.wav")
+    timestamp = int(time.time())
+    output_path = os.path.join(output_dir, f"receptionist_reply_{timestamp}.wav")
+
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+
+    return {
+        "text": state["text"],
+        "receptionist_reply": text,
+        "audio_output_path": output_path,
     }
 
 graph = StateGraph(dict)
 graph.add_node("speech_to_text", voice_to_text)
 graph.add_node("get_receptionist_response", get_receptionist_response)
+graph.add_node("text_to_voice", text_to_voice)
 
 graph.set_entry_point("speech_to_text")
 graph.add_edge("speech_to_text", "get_receptionist_response")
-graph.set_finish_point("get_receptionist_response")
+graph.add_edge("get_receptionist_response", "text_to_voice")
+graph.set_finish_point("text_to_voice")
 
 app = graph.compile()
 
 result = app.invoke({"audio_path": "./audio/hello.wav"})
-print("User said:", result["text"])
-print("Receptionist (AI) replied:", result["receptionist_reply"])
+
+print("👤 User said:", result["text"])
+print("🤖 Receptionist replied:", result["receptionist_reply"])
+print("🔊 Audio saved at:", result["audio_output_path"])
